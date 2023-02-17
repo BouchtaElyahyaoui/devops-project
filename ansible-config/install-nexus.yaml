@@ -1,0 +1,129 @@
+---
+- name: Install Java and net-tools
+  hosts: all
+  gather_facts: False
+  become: yes
+  tasks:
+    - name: Ensure shh port open
+      wait_for:
+        port: 22
+        delay: 360  
+        timeout: 500
+        search_regex: OpenSSH
+        host: '{{ (ansible_ssh_host|default(ansible_host)|default(inventory_hostname)) }}'
+      vars:
+        ansible_connection: local
+        ansible_python_interpreter: /usr/bin/python3
+
+    - name: Update apt repo and cache 
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    - name: Install Java 8
+      apt: name=openjdk-8-jre-headless
+
+    - name: Install net tools
+      apt: name=net-tools
+
+    - name: Install acl
+      apt: name=acl
+
+
+
+- name: Download and Unpack Nexus Installer 
+  hosts: all
+  gather_facts: False
+  become: yes
+  tasks:
+    - name: Check nexus folder stats
+      stat:
+        path: /opt/nexus
+      register: stat_result
+    - name: Download Nexus
+      get_url: 
+        url: https://download.sonatype.com/nexus/3/latest-unix.tar.gz
+        dest: /opt/
+      register: download_result
+    # - debug: msg = {{download_result}}
+
+    - name: Untar Nexus installer 
+      unarchive:
+        src: "{{download_result.dest}}"
+        dest: /opt/
+        remote_src: yes # To indicate that the src is in our remote machine (not master)
+      when: not stat_result.stat.exists # skip this module if folder already exists
+
+    - name: Find nexus folder
+      find:
+        paths: /opt
+        pattern: "nexus-*" # find anytging that start with nexus-
+        file_type: directory # by default its file .
+      register: find_result
+
+   
+    - debug: msg={{stat_result.stat.exists}}
+    - name: Rename nexus folder
+      shell: mv {{find_result.files[0].path}} /opt/nexus 
+      when: not stat_result.stat.exists # skip this module if folder already exists
+
+- name: Create nexus user to own nexus folders
+  hosts: all
+  gather_facts: False
+  become: yes
+  tasks:
+    - name: Ensure nexus group exists
+      group:
+        name: nexus
+        state: present
+    - name: Create nexus user
+      user:
+        name: nexus
+        group: nexus
+    - name: make nexus owner of nexus folder
+      file:
+        path: /opt/nexus
+        state: directory
+        owner: nexus
+        group: nexus
+        recurse: yes
+    - name: make nexus owner of sonatype folder
+      file:
+        path: /opt/sonatype-work
+        state: directory
+        owner: nexus
+        group: nexus
+        recurse: yes
+
+- name: start nexus with nexus user .
+  hosts: all
+  gather_facts: False
+  become: yes
+  become_user: nexus
+  tasks:
+    - name: Set run_as_user nexus
+      blockinfile: 
+        path: /opt/nexus/bin/nexus.rc
+        block: |
+          run_as_user="nexus"
+      #linefile: 
+        #path: /opt/nexus/bin/nexus.rc
+       # regexp: '^#run_as_user=""'
+       # line: run_as_user="nexus"
+    - name: Start nexus
+      command: /opt/nexus/bin/nexus start
+
+
+- name: Verify nexus running .
+  hosts: all
+  gather_facts: False
+  tasks:
+    - name: Check with ps
+      shell: ps aux | grep nexus 
+      register: app_status
+    - debug: msg={{app_status.stdout_lines}}
+    - name: Wait one minute
+      pause:
+        minutes: 1
+    - name: Check with netstat
+      shell: netstat -plnt
+      register: app_status
+    - debug: msg={{app_status.stdout_lines}}
